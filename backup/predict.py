@@ -12,7 +12,7 @@ IMG_WIDTH = 300
 chk_dual_frames = []
 two_frame_crop_image = []
 cache = []
-hit = [0]
+rate = [0, 0]
 
 
 def expit(x): #활성화 지수 함수 
@@ -86,8 +86,7 @@ def postprocess(self, net_out, im, save = True):
                 chk_dual_frames[1][k][4] = 'aesop'
             else:
                 chk_dual_frames[1][k][4] = 'kiehls' # 이때 앞뒤 값이 같이 바뀌는 이유는 리스트 append가 값을 참조하기 때문
-            cache.append([chk_dual_frames[1][k], 1]) # 1번 프레임 객체들 모두 캐시에 입력
-            hit[0] += 1
+            cache.append([chk_dual_frames[1][k], 0]) # 1번 프레임 객체들 모두 캐시에 입력
 
 
     elif len(chk_dual_frames) != 0: #2번 프레임
@@ -110,56 +109,69 @@ def postprocess(self, net_out, im, save = True):
                 print('\nsame\n')
                 for i in range(len(chk_dual_frames[0])):
                     chk_dual_frames[1][i][4] = chk_dual_frames[0][i][4]
-                hit[0] += len(chk_dual_frames[0])
-                cacheManage(chk_dual_frames[1])
+
+                chk_dual_frames[1] = cache_manage(chk_dual_frames[1])
 
             # 1.2 인식한 객체의 수는 같은데 다른 객체를 일부 포함해서 일부만 거리가 다를때
             elif len(over_idx) > 0:
                 print('\nnot same\n', over_idx)
                 
                 # 일단 이름 전부 붙이기
-                for i in range(len(chk_dual_frames[0])):
+                for i in range(len(chk_dual_frames[1])):
                     if i in over_idx:
-                        chk_dual_frames[1][i][4] = ''
+                        chk_dual_frames[1][i][4] = 'toner'
                     else:
                         chk_dual_frames[1][i][4] = chk_dual_frames[0][i][4]
-                hit[0] += len(chk_dual_frames[0]) - len(over_idx)
 
+                # 먼저 캐시에서 찾기
+                chk_dual_frames[1] = cache_manage(chk_dual_frames[1])
+
+                # 케라스
+                real_keras_index=[]
                 real_keras_input=[]
-                for x in over_idx:
-                    real_keras_input.append(two_frame_crop_image[1][x])                
-                #여기서 케라스로 들어가서 인식 후 결과 이름만 따오기
-                #결과 이름 재조합 인덱스에 없는거 붙이기
+                for i, x in enumerate(chk_dual_frames[1]):
+                    if x[4] == 'toner':
+                        real_keras_index.append(i)
+                        real_keras_input.append(two_frame_crop_image[1][i])
+                if len(real_keras_index) == 0:
+                    return
+
                 prediction = predict(real_keras_input)
-                for i, x in enumerate(over_idx):
-                    if chk_dual_frames[1][x][4] != '1':
-                        sys.exit('!!! not same numbering got wrong !!!')
+                for i, x in enumerate(real_keras_index):
+                    if chk_dual_frames[1][x][4] != 'toner':
+                        sys.exit('!!! Not Same\'s numbering got wrong')
                     if prediction[i] < 0.5:
                         chk_dual_frames[1][x][4] = 'aesop'
                     else:
                         chk_dual_frames[1][x][4] = 'kiehls'
-                cacheManage(chk_dual_frames[1])
+                    cache_input(chk_dual_frames[1][x])
         
         else: # 2. 인식한 객체의 수가 다를때
-            #crop_image 그냥 인식 시키기
-            #일단 완성 시키고 후에 유클리드 거리 기반 분류 코드 재 작성 ->고도화 포인트 1
             print('\ndifferent box number\n')
-            real_keras_input = crop_image_list
-            # if len(real_keras_input) == 0:
-            #     print('\nzero box\n')
-            #     chk_dual_frames[1] = [0]
-            # else:
+            # 먼저 캐시에서 찾기
+            chk_dual_frames[1] = cache_manage(chk_dual_frames[1])
+
+            # 케라스
+            real_keras_index=[]
+            real_keras_input=[]
+            for i, x in enumerate(chk_dual_frames[1]):
+                if x[4] == 'toner':
+                    real_keras_index.append(i)
+                    real_keras_input.append(two_frame_crop_image[1][i])
+            if len(real_keras_index) == 0:
+                return
+
             prediction = predict(real_keras_input)
-            for k, pred in enumerate(prediction):
-                if pred < 0.5:
-                    chk_dual_frames[1][k][4] = 'aesop'
+            for i, x in enumerate(real_keras_index):
+                if prediction[i] < 0.5:
+                    chk_dual_frames[1][x][4] = 'aesop'
                 else:
-                    chk_dual_frames[1][k][4] = 'kiehls'
+                    chk_dual_frames[1][x][4] = 'kiehls'
+                cache_input(chk_dual_frames[1][x])
 
     print('프레임 0  : ', chk_dual_frames[0],'\n프레임 1 : ', chk_dual_frames[1])
-    # for i in range(len(cache)):
-    #     print('캐시 ', i, ': ', cache[i][0], ', 히트: ', cache[i][1], '\n')
-    print('히트 횟수: ', hit[0])
+    for i in range(len(cache)):
+        print('캐시', i, ':', cache[i][0], ', 히트:', cache[i][1])
     print('\n')
     print('*' * 150)
     print('\n')
@@ -210,7 +222,8 @@ def overdist(a):
             over_num.append(x)
     return over_num
 
-def predict(img_list): # 리사이징, 예측 함수 (임시로 300 * 300 * 3 크기)
+# 리사이징, 예측 함수 (임시로 300 * 300 * 3 크기)
+def predict(img_list):
     prediction = []
     model = load_model('/Users/hyewon/PycharmProjects/toner-keras/model_vgg_0630.h5')
     print('Number: ', len(img_list))
@@ -224,6 +237,49 @@ def predict(img_list): # 리사이징, 예측 함수 (임시로 300 * 300 * 3 �
 
     return prediction
 
-def cacheManage(objects): # 캐시 매니징
+
+# 캐시 관련 함수
+def is_in_cache(obj):
+    for i, x in enumerate(cache):
+        # 오브젝트와 임의의 캐시 블록 사이 거리가 미미한 수준일 때 블록의 인덱스 반환
+        if calculate_distance(x[0], obj) < 100:
+            print('Cache Hit !')
+            x[1] += 1
+            rate[0] += 1
+            return x[0][4]
+    print('Cache Miss !')
+    rate[1] += 1
+    return None
+
+def cache_input(obj): # 캐시에 블록 추가
+    if len(cache) >= 30:
+        cache_delete()
+    cache.append([obj, 0])
+
+def cache_delete():
+    # i = False
+    # for i, x in enumerate(cache):
+    #     if x[0] < 5:
+    #         del cache[i]
+    #         i = True
+    #         break
+    #     else:
+    #         continue
+    # if i != True:
+    #     del cache[0]
+    del cache[0]
+
+def cache_manage(objects): # 캐시 매니징
     for obj in objects:
-        
+        # 이미 라벨링이 되어있는 경우
+        if obj[4] == 'aesop' or obj[4] == 'kiehls':
+            is_in_cache(obj)
+        # 캐시로 라벨링하는 경우
+        else :
+            label = is_in_cache(obj)
+            if label != None:
+                obj[4] = label
+            else:
+                obj[4] = 'toner'
+    
+    return objects
