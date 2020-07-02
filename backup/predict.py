@@ -11,6 +11,8 @@ IMG_HEIGHT = 300
 IMG_WIDTH = 300
 chk_dual_frames = []
 two_frame_crop_image = []
+cache = []
+hit = [0]
 
 
 def expit(x): #활성화 지수 함수 
@@ -84,6 +86,8 @@ def postprocess(self, net_out, im, save = True):
                 chk_dual_frames[1][k][4] = 'aesop'
             else:
                 chk_dual_frames[1][k][4] = 'kiehls' # 이때 앞뒤 값이 같이 바뀌는 이유는 리스트 append가 값을 참조하기 때문
+            cache.append([chk_dual_frames[1][k], 1]) # 1번 프레임 객체들 모두 캐시에 입력
+            hit[0] += 1
 
 
     elif len(chk_dual_frames) != 0: #2번 프레임
@@ -106,27 +110,40 @@ def postprocess(self, net_out, im, save = True):
                 print('\nsame\n')
                 for i in range(len(chk_dual_frames[0])):
                     chk_dual_frames[1][i][4] = chk_dual_frames[0][i][4]
+                hit[0] += len(chk_dual_frames[0])
+                cacheManage(chk_dual_frames[1])
 
             # 1.2 인식한 객체의 수는 같은데 다른 객체를 일부 포함해서 일부만 거리가 다를때
             elif len(over_idx) > 0:
                 print('\nnot same\n', over_idx)
+                
+                # 일단 이름 전부 붙이기
+                for i in range(len(chk_dual_frames[0])):
+                    if i in over_idx:
+                        chk_dual_frames[1][i][4] = ''
+                    else:
+                        chk_dual_frames[1][i][4] = chk_dual_frames[0][i][4]
+                hit[0] += len(chk_dual_frames[0]) - len(over_idx)
+
                 real_keras_input=[]
                 for x in over_idx:
-                    real_keras_input.append(two_frame_crop_image[1][x])
-                
+                    real_keras_input.append(two_frame_crop_image[1][x])                
                 #여기서 케라스로 들어가서 인식 후 결과 이름만 따오기
                 #결과 이름 재조합 인덱스에 없는거 붙이기
                 prediction = predict(real_keras_input)
-                for k, pred in enumerate(prediction):
-                    if pred < 0.5:
-                        chk_dual_frames[1][k][4] = 'aesop'
+                for i, x in enumerate(over_idx):
+                    if chk_dual_frames[1][x][4] != '1':
+                        sys.exit('!!! not same numbering got wrong !!!')
+                    if prediction[i] < 0.5:
+                        chk_dual_frames[1][x][4] = 'aesop'
                     else:
-                        chk_dual_frames[1][k][4] = 'kiehls'
+                        chk_dual_frames[1][x][4] = 'kiehls'
+                cacheManage(chk_dual_frames[1])
         
         else: # 2. 인식한 객체의 수가 다를때
             #crop_image 그냥 인식 시키기
             #일단 완성 시키고 후에 유클리드 거리 기반 분류 코드 재 작성 ->고도화 포인트 1
-            print('\n\ndifferent box number\n\n')
+            print('\ndifferent box number\n')
             real_keras_input = crop_image_list
             # if len(real_keras_input) == 0:
             #     print('\nzero box\n')
@@ -139,7 +156,10 @@ def postprocess(self, net_out, im, save = True):
                 else:
                     chk_dual_frames[1][k][4] = 'kiehls'
 
-    print('프레임 0  : ', chk_dual_frames[0],'   프레임 1 : ', chk_dual_frames[1])
+    print('프레임 0  : ', chk_dual_frames[0],'\n프레임 1 : ', chk_dual_frames[1])
+    # for i in range(len(cache)):
+    #     print('캐시 ', i, ': ', cache[i][0], ', 히트: ', cache[i][1], '\n')
+    print('히트 횟수: ', hit[0])
     print('\n')
     print('*' * 150)
     print('\n')
@@ -192,7 +212,7 @@ def overdist(a):
 
 def predict(img_list): # 리사이징, 예측 함수 (임시로 300 * 300 * 3 크기)
     prediction = []
-    model = load_model('/Users/hyewon/PycharmProjects/keras-test/model_vgg_0630.h5')
+    model = load_model('/Users/hyewon/PycharmProjects/toner-keras/model_vgg_0630.h5')
     print('Number: ', len(img_list))
     for img_arr in img_list:
         print('Shape: ', img_arr.shape)
@@ -203,3 +223,7 @@ def predict(img_list): # 리사이징, 예측 함수 (임시로 300 * 300 * 3 �
         prediction.append(output[0][0])
 
     return prediction
+
+def cacheManage(objects): # 캐시 매니징
+    for obj in objects:
+        
