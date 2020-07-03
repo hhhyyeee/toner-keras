@@ -3,6 +3,7 @@ import math
 import cv2
 import os
 import json
+import datetime
 from ...utils.box import BoundBox
 from ...cython_utils.cy_yolo2_findboxes import box_constructor
 from keras.models import load_model
@@ -12,7 +13,8 @@ IMG_WIDTH = 300
 chk_dual_frames = []
 two_frame_crop_image = []
 cache = []
-rate = [0, 0]
+rate = [1, 1]
+frame = [0, 0] # 프레임 개수, predict 함수 호출 횟수
 
 
 def expit(x): #활성화 지수 함수 
@@ -32,6 +34,8 @@ def findboxes(self, net_out): #상자 찾기
 
 def postprocess(self, net_out, im, save = True):
 
+    begin = datetime.datetime.now()
+    frame[0] += 1
     # print('\nFile: ', os.path.basename(im))
     boxes = self.findboxes(net_out) # 바운딩 박스
 
@@ -49,6 +53,7 @@ def postprocess(self, net_out, im, save = True):
     crop_image_list = [] # 박스 이미지
     location_list = [] # 박스 위치
     real_keras_input = []
+    logForTXT = []
     
     for b in boxes:
         tmp_input = [] #임의 입력값
@@ -133,22 +138,23 @@ def postprocess(self, net_out, im, save = True):
                     if x[4] == 'toner':
                         real_keras_index.append(i)
                         real_keras_input.append(two_frame_crop_image[1][i])
-                if len(real_keras_index) == 0:
-                    return
 
-                prediction = predict(real_keras_input)
-                for i, x in enumerate(real_keras_index):
-                    if chk_dual_frames[1][x][4] != 'toner':
-                        sys.exit('!!! Not Same\'s numbering got wrong')
-                    if prediction[i] < 0.5:
-                        chk_dual_frames[1][x][4] = 'aesop'
-                    else:
-                        chk_dual_frames[1][x][4] = 'kiehls'
-                    cache_input(chk_dual_frames[1][x])
+                if len(real_keras_index) != 0:
+                    prediction = predict(real_keras_input)
+                    for i, x in enumerate(real_keras_index):
+                        if chk_dual_frames[1][x][4] != 'toner':
+                            sys.exit('!!! Not Same\'s numbering got wrong')
+                        if prediction[i] < 0.5:
+                            chk_dual_frames[1][x][4] = 'aesop'
+                        else:
+                            chk_dual_frames[1][x][4] = 'kiehls'
+                        cache_input(chk_dual_frames[1][x])
         
         else: # 2. 인식한 객체의 수가 다를때
             print('\ndifferent box number\n')
-            # 먼저 캐시에서 찾기
+            # 일단 앞뒤 프레임 비교해서 라벨링하는 게 더 빠를 가능성이 있음
+            
+            # 캐시에서 찾기
             chk_dual_frames[1] = cache_manage(chk_dual_frames[1])
 
             # 케라스
@@ -158,20 +164,23 @@ def postprocess(self, net_out, im, save = True):
                 if x[4] == 'toner':
                     real_keras_index.append(i)
                     real_keras_input.append(two_frame_crop_image[1][i])
-            if len(real_keras_index) == 0:
-                return
 
-            prediction = predict(real_keras_input)
-            for i, x in enumerate(real_keras_index):
-                if prediction[i] < 0.5:
-                    chk_dual_frames[1][x][4] = 'aesop'
-                else:
-                    chk_dual_frames[1][x][4] = 'kiehls'
-                cache_input(chk_dual_frames[1][x])
+            if len(real_keras_index) != 0:
+                prediction = predict(real_keras_input)
+                for i, x in enumerate(real_keras_index):
+                    if prediction[i] < 0.5:
+                        chk_dual_frames[1][x][4] = 'aesop'
+                    else:
+                        chk_dual_frames[1][x][4] = 'kiehls'
+                    cache_input(chk_dual_frames[1][x])
 
+    end = datetime.datetime.now()
     print('프레임 0  : ', chk_dual_frames[0],'\n프레임 1 : ', chk_dual_frames[1])
     for i in range(len(cache)):
         print('캐시', i, ':', cache[i][0], ', 히트:', cache[i][1])
+    print('히트 레이트:', (rate[0] / sum(rate))*100, '%')
+    print('프레임당 소요시간:', end - begin)
+    print('모델 예측 횟수:', frame[1])
     print('\n')
     print('*' * 150)
     print('\n')
@@ -185,6 +194,15 @@ def postprocess(self, net_out, im, save = True):
         
         cv2.putText(imgcv, box[4], (box[0], box[2] - 12),
             0, 1e-3 * h, colors[1], thick//3)
+    
+    # 로그
+    logForTXT.append('프레임 : ' + str(frame[0]) + '\n')
+    logForTXT.append('히트 레이트 : ' + str((rate[0] / sum(rate))*100) + '%\n')
+    logForTXT.append('프레임당 소요시간 : ' + str(end - begin) + '\n')
+    logForTXT.append('모델 예측 횟수 : ' + str(frame[1]) + '\n')
+    logForTXT.append('\n\n**************************\n\n')
+    with open('logs/log_cache_demo-test-2_20200703.txt', 'a') as f:
+        f.writelines(logForTXT)
 
     if not save: return imgcv
 
@@ -198,11 +216,6 @@ def postprocess(self, net_out, im, save = True):
             f.write(textJSON)
         return
     cv2.imwrite(img_name, imgcv)
-
-    # print('프레임 0  : ', chk_dual_frames[0],'   프레임 1 : ', chk_dual_frames[1])
-    # print('\n')
-    # print('*' * 150)
-    # print('\n')
 
 
 def calculate_distance(a, b):
@@ -224,6 +237,7 @@ def overdist(a):
 
 # 리사이징, 예측 함수 (임시로 300 * 300 * 3 크기)
 def predict(img_list):
+    frame[1] += 1
     prediction = []
     model = load_model('/Users/hyewon/PycharmProjects/toner-keras/model_vgg_0630.h5')
     print('Number: ', len(img_list))
@@ -240,7 +254,7 @@ def predict(img_list):
 
 # 캐시 관련 함수
 def is_in_cache(obj):
-    for i, x in enumerate(cache):
+    for i, x in enumerate(reversed(cache)):
         # 오브젝트와 임의의 캐시 블록 사이 거리가 미미한 수준일 때 블록의 인덱스 반환
         if calculate_distance(x[0], obj) < 100:
             print('Cache Hit !')
@@ -252,21 +266,11 @@ def is_in_cache(obj):
     return None
 
 def cache_input(obj): # 캐시에 블록 추가
-    if len(cache) >= 30:
+    if len(cache) >= 20:
         cache_delete()
     cache.append([obj, 0])
 
 def cache_delete():
-    # i = False
-    # for i, x in enumerate(cache):
-    #     if x[0] < 5:
-    #         del cache[i]
-    #         i = True
-    #         break
-    #     else:
-    #         continue
-    # if i != True:
-    #     del cache[0]
     del cache[0]
 
 def cache_manage(objects): # 캐시 매니징
